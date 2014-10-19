@@ -63,6 +63,10 @@ static unsigned int uvc_move(struct context *cnt, int dev, struct coord *cent,
 #endif /* MOTION_V4L2 */
 #endif /* WITHOUT_V4L */
 
+static unsigned int rpiopwm_center(struct context *cnt, int xoff ATTRIBUTE_UNUSED, int yoff ATTRIBUTE_UNUSED);
+static unsigned int rpiopwm_move(struct context *cnt, struct coord *cent,
+				 struct images *imgs, unsigned int manual);
+
 /* Add a call to your functions here: */
 unsigned int track_center(struct context *cnt, int dev ATTRIBUTE_UNUSED,
                                 unsigned int manual, int xoff, int yoff)
@@ -93,6 +97,8 @@ unsigned int track_center(struct context *cnt, int dev ATTRIBUTE_UNUSED,
         return iomojo_center(cnt, xoff, yoff);
     else if (cnt->track.type == TRACK_TYPE_GENERIC)
         return 10; // FIX ME. I chose to return something reasonable.
+    else if (cnt->track.type == TRACK_TYPE_RPIOPWM)
+	return rpiopwm_center(cnt, xoff, yoff);
 
     MOTION_LOG(ERR, TYPE_TRACK, SHOW_ERRNO, "%s: internal error, %hu is not a known track-type",
                cnt->track.type);
@@ -124,6 +130,8 @@ unsigned int track_move(struct context *cnt, int dev, struct coord *cent, struct
         return iomojo_move(cnt, dev, cent, imgs);
     else if (cnt->track.type == TRACK_TYPE_GENERIC)
         return cnt->track.move_wait; // FIX ME. I chose to return something reasonable.
+    else if (cnt->track.type == TRACK_TYPE_RPIOPWM)
+	return rpiopwm_move(cnt,cent,imgs,manual);
 
     MOTION_LOG(WRN, TYPE_TRACK, SHOW_ERRNO, "%s: internal error, %hu is not a known track-type",
                cnt->track.type);
@@ -1229,3 +1237,74 @@ static unsigned int uvc_move(struct context *cnt, int dev, struct coord *cent,
 }
 #endif /* MOTION_V4L2 */
 #endif /* WITHOUT_V4L */
+
+static void rpiopwm_set(struct context *cnt, int x, int y)
+{
+    FILE* f;
+
+    if (cnt->track.motorx_reverse)
+        x = abs(cnt->track.maxx - x);
+
+    if (cnt->track.motory_reverse)
+        y = abs(cnt->track.maxy - y);
+
+    f = fopen("/dev/rpio-pwm","w");
+    if (f)
+    {
+        MOTION_LOG(NTC, TYPE_TRACK, NO_ERRNO, "%s: rpi-pwm servo set to %d,%d", x, y);
+
+        char buffer[128];
+
+        sprintf(buffer, "%d=%d\n", cnt->track.motorx, x);
+        fwrite(buffer, strlen(buffer), 1, f);
+
+        sprintf(buffer, "%d=%d\n", cnt->track.motory, y);
+        fwrite(buffer, strlen(buffer), 1, f);
+
+        fclose(f);
+    }
+    else
+	MOTION_LOG(ERR, TYPE_TRACK, SHOW_ERRNO, "%s: could not open /dev/rpio-pwm");
+}
+
+/* Save off the current absolute position */
+static int rpiopwm_x = 0;
+static int rpiopwm_y = 0;
+
+static unsigned int rpiopwm_center(struct context *cnt, int xoff ATTRIBUTE_UNUSED, int yoff ATTRIBUTE_UNUSED)
+{
+    rpiopwm_x = cnt->track.homex;
+    rpiopwm_y = cnt->track.homey;
+
+    rpiopwm_set(cnt, rpiopwm_x, rpiopwm_y);
+
+    return cnt->track.move_wait;
+}
+
+/* No movement if we are already within this range of center movement */
+#define RPIOPWM_EPSILON 10
+
+static unsigned int rpiopwm_move(struct context *cnt, struct coord *cent,
+                                     struct images *imgs, unsigned int manual)
+{
+    int xdiff = abs((imgs->width / 2) - cent->x);
+    int ydiff = abs((imgs->height / 2) - cent->y);
+
+    /* move faster if further away from center of movement */
+    int xspeed = (xdiff > imgs->width / 5) ? 2 : 1;
+    int yspeed = (ydiff > imgs->height / 5) ? 2 : 1;
+
+    if (cent->x < (imgs->width / 2) && xdiff > RPIOPWM_EPSILON && rpiopwm_x < cnt->track.maxx)
+        rpiopwm_x += xspeed;
+    else if (cent->x > (imgs->width / 2) && xdiff > RPIOPWM_EPSILON && rpiopwm_x > cnt->track.minx)
+        rpiopwm_x -= xspeed;
+
+    if (cent->y < (imgs->height / 2) && ydiff > RPIOPWM_EPSILON && rpiopwm_y > cnt->track.miny)
+        rpiopwm_y -= yspeed;
+    else if (cent->y > (imgs->height / 2) && ydiff > RPIOPWM_EPSILON && rpiopwm_y < cnt->track.maxy)
+        rpiopwm_y += yspeed;
+
+    rpiopwm_set(cnt, rpiopwm_x,rpiopwm_y);
+
+    return cnt->track.move_wait;
+}

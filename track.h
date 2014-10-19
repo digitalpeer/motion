@@ -57,6 +57,7 @@ unsigned int track_move(struct context *, int, struct coord *, struct images *, 
 #define TRACK_TYPE_GENERIC      4
 #define TRACK_TYPE_UVC          5
 #define TRACK_TYPE_SERVO        6
+#define TRACK_TYPE_RPIOPWM      7
 
 /*
  * Some defines for the Serial stepper motor:
